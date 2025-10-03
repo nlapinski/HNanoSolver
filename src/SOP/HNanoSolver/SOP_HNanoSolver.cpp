@@ -21,6 +21,14 @@ void newSopOperator(OP_OperatorTable* table) {
 const char* const SOP_HNanoSolverVerb::theDsFile = R"THEDSFILE(
 {
     name        parameters
+	parm {
+		name "debug_output"
+		label "Enable debug printout"
+        type    integer
+        size    1
+        range   { 0 1 }
+		default { "0" }
+	}
     parm {
         name    "timestep"
         label   "Time Step"
@@ -84,6 +92,76 @@ const char* const SOP_HNanoSolverVerb::theDsFile = R"THEDSFILE(
 		size 1
 		default { "0.5" }
 	}
+	parm {
+		name "disturbance_strength"
+		label "Disturbance Strength"
+		type float
+		size 1
+		default { "0.5" }
+	}
+	parm {
+		name "disturbance_swirl"
+		label "Disturbance Swirl Size"
+		type float
+		size 1
+		default { "0.05" }
+	}
+	parm {
+		name "disturbance_threshold"
+		label "Disturbance Threshold"
+		type float
+		size 1
+		default { "5.00" }
+	}
+	parm {
+		name "disturbance_gain"
+		label "Disturbance Gain"
+		type float
+		size 1
+		default { "0.2" }
+	}
+	parm {
+		name "disturbance_enable"
+		label "Disturbance Enable"
+		type integer
+		size 1
+		default { "1" }
+	}
+	parm {
+		name "disturbance_frequency"
+		label "Disturbance Frequency"
+		type integer
+		size 1
+		default { "1" }
+	}
+	parm {
+		name "substeps"
+		label "Substeps"
+		type integer
+		size 1
+		default { "1" }
+	}
+	parm {
+		name "gravity"
+		label "Graviy in Y"
+		type float
+		size 1
+		default { "1.00" }
+	}
+	parm {
+		name "maskDensityMin"
+		label "Mask Density min"
+		type float
+		size 1
+		default { "0.05" }
+	}
+	parm {
+		name "maskDensityMax"
+		label "Mask Density max"
+		type float
+		size 1
+		default { "0.50" }
+	}
 }
 )THEDSFILE";
 
@@ -97,6 +175,8 @@ const SOP_NodeVerb::Register<SOP_HNanoSolverVerb> SOP_HNanoSolverVerb::theVerb;
 const SOP_NodeVerb* SOP_HNanoSolver::cookVerb() const { return SOP_HNanoSolverVerb::theVerb.get(); }
 
 void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
+	
+
 	const auto& sopparms = cookparms.parms<SOP_HNanoSolverParms>();
 	const auto sopcache = dynamic_cast<SOP_HNanoSolverCache*>(cookparms.cache());
 
@@ -110,6 +190,8 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	std::vector<openvdb::GridBase::Ptr> feedback_grids;
 	std::vector<openvdb::GridBase::Ptr> source_grids;     // Velocity grid ( len = 1 )
 	std::vector<openvdb::GridBase::Ptr> collision_grids;  // SDF grid for collisions
+
+	int debugOutput = sopparms.getDebug_output();
 
 	if (auto err = loadGrid(feedback_input, feedback_grids); err != UT_ERROR_NONE) {
 		err = cookparms.sopAddError(SOP_MESSAGE, "Failed to load feedback grid");
@@ -159,7 +241,10 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	bool isSourced = !source_grids.empty();
 
 	if (isSourced) {
-		ScopedTimer timer("HNanoSolver::Sourcing");
+		if (debugOutput) {
+			ScopedTimer timer("HNanoSolver::Sourcing");
+		}	
+		
 		for (const auto& grid : source_grids) {
 			if (auto float_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(grid)) {
 				source_float_grids.push_back(float_grid);
@@ -187,7 +272,9 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 
 	openvdb::MaskGrid::Ptr domainGrid = openvdb::MaskGrid::create();
 	{
-		ScopedTimer timer("HNanoSolver::DefineTopology");
+		if (debugOutput) {
+			ScopedTimer timer("HNanoSolver::DefineTopology");
+		}
 		domainGrid->tree().topologyUnion(primaryVelocityGrid->tree());
 
 		openvdb::tools::morphology::Morphology<openvdb::MaskTree> morph(domainGrid->tree());
@@ -226,7 +313,9 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	// --- 4. Create NanoVDB Acceleration Structure ---
 	nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> handle;
 	{
-		ScopedTimer timer("Building NanoVDB Index Grid");
+		if (debugOutput) {
+			ScopedTimer timer("Building NanoVDB Index Grid");
+		}
 		try {
 			CreateIndexGrid(data, handle, voxelSize);
 		} catch (const std::exception& e) {
