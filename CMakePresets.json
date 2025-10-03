@@ -16,27 +16,27 @@
     {
       "name": "x64-debug",
       "inherits": "default",
-      "description": "Build using Visual Studio 2022 with v142 toolset (Debug)",
+      "description": "Build using Visual Studio 2022 with v143 toolset (Debug)",
       "generator": "Visual Studio 17 2022",
       "architecture": {
         "value": "x64"
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_GENERATOR_TOOLSET": "v142"
+        "CMAKE_GENERATOR_TOOLSET": "v143"
       }
     },
     {
       "name": "x64-release",
       "inherits": "default",
-      "description": "Build using Visual Studio 2022 with v142 toolset (Release)",
+      "description": "Build using Visual Studio 2022 with v143 toolset (Release)",
       "generator": "Visual Studio 17 2022",
       "architecture": {
         "value": "x64"
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_GENERATOR_TOOLSET": "v142"
+        "CMAKE_GENERATOR_TOOLSET": "v143"
       }
     }
   ]

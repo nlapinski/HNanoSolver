@@ -29,7 +29,7 @@ class SOP_HNanoVDBFromGrid final : public SOP_Node {
 	const SOP_NodeVerb* cookVerb() const override;
 
 
-	const char* inputLabel(unsigned idx) const override {
+	const char* inputLabel(OP_InputIdx idx) const override {
 		switch (idx) {
 			case 0:
 				return "Input Grids";
