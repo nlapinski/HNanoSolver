@@ -1047,114 +1047,8 @@ __global__ void add_velocity_source_xyz(nanovdb::Vec3f* __restrict__ vel, const 
 	}
 }
 
-// Disturbance via pressure
+// Simple vel disturbance
 
-//__global__ void inject_edge_disturbance_vel(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
-//                                            const nanovdb::Coord* __restrict__ d_coords, const float* __restrict__ pressure,
-//                                            const float* __restrict__ collisionSDF, const bool hasCollision,
-//                                            nanovdb::Vec3f* __restrict__ inoutVel, const size_t totalVoxels, const float dt,
-//                                            const float inv_dx,
-//                                            const float gradThresh,
-//                                            const float strength,
-//                                            const float swirl,
-//                                            const float blockSize) {
-//	const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-//	if (tid >= totalVoxels) return;
-//
-//	const IndexOffsetSampler<0> idxSampler(domainGrid);
-//	const auto pSampler = IndexSampler<float, 0>(idxSampler, pressure);
-//	const auto sdfSampler = IndexSampler<float, 1>(idxSampler, collisionSDF);
-//
-//	const nanovdb::Coord c = d_coords[tid];
-//
-//	if (hasCollision && collisionSDF) {
-//		// Avoid injecting inside obstacles
-//		const float sdf = sdfSampler(c);
-//		if (sdf < 0.0f) return;
-//	}
-//
-//	float gx, gy, gz;
-//	gradientP_centered(pSampler, c, inv_dx, gx, gy, gz);
-//
-//	const float mag2 = gx * gx + gy * gy + gz * gz;
-//	if (mag2 < gradThresh * gradThresh) return;
-//
-//	const float mag = sqrtf(mag2) + 1e-8f;
-//	// Unit gradient direction
-//	float nx = gx / mag, ny = gy / mag, nz = gz / mag;
-//
-//	// Small deterministic swirl direction orthogonal to delta-p
-//	// Build a pseudo-random vector and project out gradient component.
-//	const uint32_t h = hash_u32((uint32_t)c.x(), (uint32_t)c.y(), (uint32_t)c.z());
-//	float rx = u32_to_uniform01(h) * 2.0f - 1.0f;
-//	float ry = u32_to_uniform01(h * 1664525u + 1013904223u) * 2.0f - 1.0f;
-//	float rz = u32_to_uniform01(h * 22695477u + 1u) * 2.0f - 1.0f;
-//	// Remove component along normal: r = r - (r·n) n
-//	const float rdotn = rx * nx + ry * ny + rz * nz;
-//	rx -= rdotn * nx;
-//	ry -= rdotn * ny;
-//	rz -= rdotn * nz;
-//	const float rl = sqrtf(rx * rx + ry * ry + rz * rz) + 1e-8f;
-//	rx /= rl;
-//	ry /= rl;
-//	rz /= rl;
-//
-//	// Blend: dir = lerp(n, r, swirl)
-//	float dirx = nx + swirl * (rx - nx);
-//	float diry = ny + swirl * (ry - ny);
-//	float dirz = nz + swirl * (rz - nz);
-//	const float dl = sqrtf(dirx * dirx + diry * diry + dirz * dirz) + 1e-8f;
-//	dirx /= dl;
-//	diry /= dl;
-//	dirz /= dl;
-//
-//	// Scale by strength and time
-//	const float s = strength * dt;
-//	nanovdb::Vec3f v = inoutVel[tid];
-//	v[0] += dirx * s;
-//	v[1] += diry * s;
-//	v[2] += dirz * s;
-//	inoutVel[tid] = v;
-//}
-//
-//__global__ void inject_edge_disturbance_temp(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
-//                                             const nanovdb::Coord* __restrict__ d_coords, const float* __restrict__ pressure,
-//                                             const float* __restrict__ collisionSDF, const bool hasCollision, float* __restrict__
-//                                             inoutTemp, const size_t totalVoxels, const float dt, const float inv_dx, const float
-//                                             gradThresh, const float gainPerGrad, const float blockSize) {
-//	const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-//	if (tid >= totalVoxels) return;
-//
-//	const IndexOffsetSampler<0> idxSampler(domainGrid);
-//	const auto pSampler = IndexSampler<float, 0>(idxSampler, pressure);
-//	const auto sdfSampler = IndexSampler<float, 1>(idxSampler, collisionSDF);
-//
-//	const nanovdb::Coord c = d_coords[tid];
-//
-//	if (hasCollision && collisionSDF) {
-//		const float sdf = sdfSampler(c);
-//		if (sdf < 0.0f) return;
-//	}
-//
-//	float gx, gy, gz;
-//	gradientP_centered(pSampler, c, inv_dx, gx, gy, gz);
-//
-//	const float mag = sqrtf(gx * gx + gy * gy + gz * gz);
-//	if (mag < gradThresh) return;
-//
-//	// Optional mild randomness to avoid banding
-//	const uint32_t h = hash_u32((uint32_t)c.x(), (uint32_t)c.y(), (uint32_t)c.z());
-//	const float jitter = 0.8f + 0.4f * u32_to_uniform01(h);  // [0.8, 1.2]
-//
-//	inoutTemp[tid] += gainPerGrad * mag * jitter * dt;
-//}
-
-//__device__ __forceinline__ int floordiv_int(int a, int b) {
-//	// int q = a / b;
-//	// int r = a % b;
-//	// return (r != 0 && a < 0) ? (q - 1) : q;
-//	return __float2int_rd((float)a / (float)b);
-//}
 __device__ __forceinline__ int floordiv_int(int a, int b) {
 	int q = a / b;
 	int r = a - q * b;
@@ -1314,10 +1208,6 @@ __global__ void inject_edge_disturbance_vel(const nanovdb::NanoGrid<nanovdb::Val
 	diry /= dl;
 	dirz /= dl;
 
-	// Optional per-block gating to create checker pattern at block scale:
-	// Uncomment if you want half the blocks inactive.
-	// if (((bx + by + bz) & 1) != 0) return;
-
 	const float s = strength * dt;
 	nanovdb::Vec3f v = inoutVel[tid];
 	v[0] += dirx * s;
@@ -1357,7 +1247,7 @@ __global__ void inject_edge_disturbance_temp(const nanovdb::NanoGrid<nanovdb::Va
 	const int by = floordiv_int(c.y(), bs);
 	const int bz = floordiv_int(c.z(), bs);
 
-	// Per-block jitter so temperature bumps are block-coherent
+	// Per-block jitter 
 	const uint32_t h = hash_u32((uint32_t)bx, (uint32_t)by, (uint32_t)bz);
 	const float jitter = 0.8f + 0.4f * u32_to_uniform01(h);
 
