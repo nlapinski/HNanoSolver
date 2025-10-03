@@ -5,8 +5,6 @@ project(HNanoSOP LANGUAGES CUDA CXX)
 find_package(CUDAToolkit REQUIRED)
 set(CUDA_ATTACH_VS_BUILD_RULE_TO_CUDA_FILE OFF)
 
-set(BUILD_NANO_SOLVER_ONLY ON)
-
 # Set vars
 if (UNIX)
     set(openvdb_lib "$ENV{HFS}/dsolib/libopenvdb_sesi.so")
@@ -73,6 +71,10 @@ function(add_sop_library LIBNAME )
             $ENV{HFS}/toolkit/include
     )
     target_compile_features(${LIBNAME} PUBLIC cxx_std_17)
+    target_compile_options(${LIBNAME} PRIVATE
+        $<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C>>:/MP>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/MP>
+    )
     source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRC_FILES})
 endfunction()
 

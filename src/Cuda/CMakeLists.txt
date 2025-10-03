@@ -11,6 +11,10 @@ set(SRC_FILES
 
 set(EXTERNAL_INCLUDE
     "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/tools/cuda/PointsToGrid.cuh"
+    "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/cuda/DeviceBuffer.h"
+    "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/cuda/GridHandle.cuh"
+    "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/GridHandle.h"
+    "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/cuda/NodeManager.cuh"
     "${CMAKE_CURRENT_LIST_DIR}/../../externals/nanovdb/NanoVDB.h"
 )
 
