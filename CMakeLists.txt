@@ -11,10 +11,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(BUILD_SHARED_LIBS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+
+
 # Define build options
 option(HNS_BUILD_SOP "Build SOP components" ON)
 option(HNS_BUILD_TESTS "Build tests" OFF)
 option(HNS_BUILD_VIEWER "Build HNanoViewer" OFF)
+
+# Only build the nano solver sop
+option(BUILD_NANO_SOLVER_ONLY "Build nano solver sop only" ON)
 
 # Set default build type if not specified
 if (NOT CMAKE_BUILD_TYPE)

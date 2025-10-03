@@ -3,15 +3,17 @@ enable_language(CUDA)
 include_directories("$ENV{HFS}/toolkit/include")
 include_directories(../../externals)
 
-add_library(Kernels STATIC
+set(SRC_FILES 
         Utils.cuh
         Kernels.cuh
         Kernel.cu
         Advection.cu
         PressureProjection.cu
         Combustion.cu
-        HNanoSolver.cu
-)
+        HNanoSolver.cu)
+
+add_library(Kernels STATIC ${SRC_FILES})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Kernels" FILES ${SRC_FILES})
 
 target_compile_options(Kernels PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
@@ -25,3 +27,4 @@ target_include_directories(Kernels
 target_link_libraries(Kernels PRIVATE CUDA::cudart)
 
 target_compile_features(Kernels PUBLIC cxx_std_17)
+
