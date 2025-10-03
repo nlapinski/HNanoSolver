@@ -62,7 +62,8 @@ target_compile_features(Utils PUBLIC cxx_std_17)
 
 ########################  SOP library ##################################################################################
 
-function(add_sop_library LIBNAME SRC_FILES)
+function(add_sop_library LIBNAME )
+    set(SRC_FILES ${ARGN})
     add_library(${LIBNAME} SHARED ${SRC_FILES})
     target_link_libraries(${LIBNAME} PRIVATE Utils Kernels HoudiniVDB)
     target_include_directories(${LIBNAME} PRIVATE
@@ -71,31 +72,32 @@ function(add_sop_library LIBNAME SRC_FILES)
             $ENV{HFS}/toolkit/include
     )
     target_compile_features(${LIBNAME} PUBLIC cxx_std_17)
+    source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRC_FILES})
 endfunction()
 
 add_sop_library(SOP_HNanoSolver
-        "HNanoSolver/SOP_HNanoSolver.cpp"
-        "HNanoSolver/SOP_HNanoSolver.hpp"
+        HNanoSolver/SOP_HNanoSolver.cpp
+        HNanoSolver/SOP_HNanoSolver.hpp
 )
 
 add_sop_library(SOP_Advect
-        "Advection/SOP_VDBAdvect.cpp"
-        "Advection/SOP_VDBAdvect.hpp"
+        Advection/SOP_VDBAdvect.cpp
+        Advection/SOP_VDBAdvect.hpp
 )
 
 add_sop_library(SOP_ProjectNonDivergent
-        "ProjectNonDivergent/SOP_VDBProjectNonDivergent.cpp"
-        "ProjectNonDivergent/SOP_VDBProjectNonDivergent.hpp"
+        ProjectNonDivergent/SOP_VDBProjectNonDivergent.cpp
+        ProjectNonDivergent/SOP_VDBProjectNonDivergent.hpp
 )
 
 add_sop_library(SOP_AdvectVelocity
-        "VelocityAdvection/SOP_VDBAdvectVelocity.cpp"
-        "VelocityAdvection/SOP_VDBAdvectVelocity.hpp"
+        VelocityAdvection/SOP_VDBAdvectVelocity.cpp
+        VelocityAdvection/SOP_VDBAdvectVelocity.hpp
 )
 
 add_sop_library(SOP_VDBFromGrid
-        "ReadWrite/SOP_VDBFromGrid.cpp"
-        "ReadWrite/SOP_VDBFromGrid.hpp"
+        ReadWrite/SOP_VDBFromGrid.cpp
+        ReadWrite/SOP_VDBFromGrid.hpp
 )
 
 ########################################################################################################################
