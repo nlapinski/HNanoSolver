@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(HNanoSolver LANGUAGES CXX CUDA VERSION 1.0.0)
 
+# fix header <> stuff
+set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
+
 # Enforce C++17 standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,8 +13,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(BUILD_SHARED_LIBS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-
 
 # Define build options
 option(HNS_BUILD_SOP "Build SOP components" ON)
