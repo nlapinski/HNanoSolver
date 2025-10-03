@@ -27,7 +27,11 @@ class IndexGridBuilder {
 	// Grid variant for type-safe storage
 	using GridVariant = std::variant<openvdb::FloatGrid::Ptr, openvdb::VectorGrid::Ptr>;
 
+	int debugOutput;
+	
+
 	explicit IndexGridBuilder(DomainGridPtr domain, GridIndexedData* data) : m_domainGrid{std::move(domain)}, m_outData{data} {
+		debugOutput = 0;
 		if (!m_domainGrid) {
 			throw std::runtime_error("IndexGridBuilder: domain grid is null!");
 		}
@@ -50,7 +54,9 @@ class IndexGridBuilder {
 
 
 	void addGrid(const openvdb::GridBase::Ptr& grid, std::string_view name) {
-		const ScopedTimer timer{std::string{"IndexGridBuilder::AddGrid "} + std::string{name}};
+		if (debugOutput) {
+			const ScopedTimer timer{std::string{"IndexGridBuilder::AddGrid "} + std::string{name}};
+		}
 
 		if (!grid) {
 			throw std::runtime_error("IndexGridBuilder: Grid is null! Couldn't add grid");
@@ -85,7 +91,9 @@ class IndexGridBuilder {
 	}
 
 	void build() {
-		ScopedTimer timer("IndexGridBuilder::Build");
+		if (debugOutput) {
+			ScopedTimer timer("IndexGridBuilder::Build");
+		}
 
 		using TreeType = typename DomainGridT::TreeType;
 		const TreeType& tree = m_domainGrid->tree();
@@ -172,7 +180,9 @@ class IndexGridBuilder {
 		using TreeT = typename GridT::TreeType;
 		using LeafT = typename TreeT::LeafNodeType;
 
-		ScopedTimer timer("IndexGridBuilder::WriteIndexGrid " + name);
+		if (debugOutput) {
+			ScopedTimer timer("IndexGridBuilder::WriteIndexGrid " + name);
+		}
 
 		typename GridT::Ptr grid = GridT::create();
 
@@ -219,7 +229,9 @@ class IndexGridBuilder {
 
    private:
 	void computeLeafs() {
-		const ScopedTimer timer{"IndexGridBuilder::computeLeafs"};
+		if (debugOutput) {
+			const ScopedTimer timer{"IndexGridBuilder::computeLeafs"};
+		}
 
 		const auto& tree = m_domainGrid->tree();
 		const openvdb::tree::LeafManager leafManager{tree};

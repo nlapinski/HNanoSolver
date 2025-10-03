@@ -274,6 +274,7 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 
 	HNS::GridIndexedData data;
 	HNS::IndexGridBuilder<openvdb::MaskGrid> builder(domainGrid, &data);
+	builder.debugOutput = debugOutput;
 	builder.setAllocType(AllocationType::Standard);
 	{
 		for (const auto& grid : feedback_float_grids) {
