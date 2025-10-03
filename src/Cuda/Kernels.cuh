@@ -10,6 +10,17 @@ struct CombustionParams {
 	float ambientTemp;
 	float vorticityScale;
 	float factorScale;
+	// disturb parms
+	float disturbanceEnable;
+	float disturbanceStrength;
+	float disturbanceSwirl;
+	float disturbanceThreshold;
+	float disturbanceGain;
+	float disturbanceFrequency;
+	int substeps;
+	float gravity;
+	float maskDensityMin;
+	float maskDensityMax;
 };
 
 __global__ void advect_scalar(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
@@ -105,3 +116,67 @@ __global__ void enforceCollisionBoundaries(const nanovdb::NanoGrid<nanovdb::Valu
 
 template <typename Vec3T>
 __device__ nanovdb::Vec3f gradientSDF(const float* sdfData, const Vec3T& coord, const IndexSampler<float, 1>& sampler, float inv_voxelSize);
+
+// source composite helpers
+
+__global__ void add_scalar_source(float* __restrict__ field, const float* __restrict__ src, float dt, int N);
+
+__global__ void add_velocity_source(nanovdb::Vec3f* __restrict__ vel, const nanovdb::Vec3f* __restrict__ src, float dt, int N);
+
+__global__ void add_velocity_source_xyz(nanovdb::Vec3f* __restrict__ vel, const float* __restrict__ sx, const float* __restrict__ sy,
+                                        const float* __restrict__ sz, float dt, int N);
+
+
+__device__ inline uint32_t hash_u32(uint32_t x, uint32_t y, uint32_t z) {
+	uint32_t h = x * 374761393u + y * 668265263u + z * 2246822519u;
+	h ^= h >> 13;
+	h *= 1274126177u;
+	h ^= h >> 16;
+	return h;
+}
+
+__device__ inline float u32_to_uniform01(uint32_t h) { return (h & 0x00FFFFFFu) * (1.0f / 16777216.0f); }
+
+__device__ inline void gradientP_centered(const IndexSampler<float, 0>& pSampler, const nanovdb::Coord& c, float inv_dx, float& gx,
+                                          float& gy, float& gz) {
+	const float p_xp = pSampler(c + nanovdb::Coord(1, 0, 0));
+	const float p_xm = pSampler(c - nanovdb::Coord(1, 0, 0));
+	const float p_yp = pSampler(c + nanovdb::Coord(0, 1, 0));
+	const float p_ym = pSampler(c - nanovdb::Coord(0, 1, 0));
+	const float p_zp = pSampler(c + nanovdb::Coord(0, 0, 1));
+	const float p_zm = pSampler(c - nanovdb::Coord(0, 0, 1));
+
+
+	const float s = 0.5f * inv_dx;
+	gx = (p_xp - p_xm) * s;
+	gy = (p_yp - p_ym) * s;
+	gz = (p_zp - p_zm) * s;
+}
+
+__global__ void inject_edge_disturbance_vel(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
+                                            const nanovdb::Coord* __restrict__ d_coords, const float* __restrict__ pressure,
+                                            const float* __restrict__ collisionSDF, const bool hasCollision,
+                                            nanovdb::Vec3f* __restrict__ inoutVel, const size_t totalVoxels, const float dt,
+                                            const float inv_dx, const float gradThresh, const float strength, const float swirl,
+                                            const int blockSize);
+
+__global__ void inject_edge_disturbance_temp(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
+                                             const nanovdb::Coord* __restrict__ d_coords, const float* __restrict__ pressure,
+                                             const float* __restrict__ collisionSDF, const bool hasCollision, float* __restrict__ inoutTemp,
+                                             const size_t totalVoxels, const float dt, const float inv_dx, const float gradThresh,
+                                             const float gainPerGrad, const int blockSize);
+
+__global__ void add_gravity(nanovdb::Vec3f* __restrict__ vel, float g, float dt, int N);
+
+__global__ void inject_edge_disturbance_vel_from_density(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
+                                                         const nanovdb::Coord* __restrict__ d_coords,
+                                                         const float* __restrict__ density,  // drive + mask
+                                                         const float densMin,                // mask 0 at/below
+                                                         const float densMax,                // mask 1 at/above
+                                                         const float* __restrict__ collisionSDF, const bool hasCollision,
+                                                         nanovdb::Vec3f* __restrict__ inoutVel, const size_t totalVoxels, const float dt,
+                                                         const float inv_dx,
+                                                         const float gradThresh,   // |delta density| threshold
+                                                         const float strength,     // accel magnitude
+                                                         const float swirl,        // [0,1] orthogonal mix
+                                                         const int patternBlock);  // block size in voxelsn voxels (>=1)

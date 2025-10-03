@@ -17,7 +17,6 @@
 #include "nanovdb/GridHandle.h"
 #include "nanovdb/cuda/DeviceBuffer.h"
 
-
 struct CombustionParams {
 	float expansionRate;
 	float temperatureRelease;
@@ -25,6 +24,17 @@ struct CombustionParams {
 	float ambientTemp;
 	float vorticityScale;
 	float factorScale;
+	// disturb parms
+	float disturbanceEnable;
+	float disturbanceStrength;
+	float disturbanceSwirl;
+	float disturbanceThreshold;
+	float disturbanceGain;
+	float disturbanceFrequency;
+	int substeps;
+	float gravity;
+	float maskDensityMin;
+	float maskDensityMax;
 };
 
 class SOP_HNanoSolver final : public SOP_Node {

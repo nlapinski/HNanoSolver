@@ -174,9 +174,8 @@ const SOP_NodeVerb::Register<SOP_HNanoSolverVerb> SOP_HNanoSolverVerb::theVerb;
 
 const SOP_NodeVerb* SOP_HNanoSolver::cookVerb() const { return SOP_HNanoSolverVerb::theVerb.get(); }
 
-void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
-	
 
+void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	const auto& sopparms = cookparms.parms<SOP_HNanoSolverParms>();
 	const auto sopcache = dynamic_cast<SOP_HNanoSolverCache*>(cookparms.cache());
 
@@ -190,7 +189,7 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	std::vector<openvdb::GridBase::Ptr> feedback_grids;
 	std::vector<openvdb::GridBase::Ptr> source_grids;     // Velocity grid ( len = 1 )
 	std::vector<openvdb::GridBase::Ptr> collision_grids;  // SDF grid for collisions
-
+	
 	int debugOutput = sopparms.getDebug_output();
 
 	if (auto err = loadGrid(feedback_input, feedback_grids); err != UT_ERROR_NONE) {
@@ -243,25 +242,13 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	if (isSourced) {
 		if (debugOutput) {
 			ScopedTimer timer("HNanoSolver::Sourcing");
-		}	
-		
+		}
 		for (const auto& grid : source_grids) {
 			if (auto float_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(grid)) {
 				source_float_grids.push_back(float_grid);
 			} else if (auto vector_grid = openvdb::gridPtrCast<openvdb::VectorGrid>(grid)) {
 				source_vector_grids.push_back(vector_grid);
 			}
-		}
-		for (int i = 0; i < source_float_grids.size(); ++i) {
-			auto& sourceG = source_float_grids[i];
-			auto& feedbackG = feedback_float_grids[i];
-			openvdb::tools::compSum(*feedbackG, *sourceG);
-		}
-
-		for (int i = 0; i < source_vector_grids.size(); ++i) {
-			auto& sourceG = source_vector_grids[i];
-			auto& feedbackG = feedback_vector_grids[i];
-			openvdb::tools::compSum(*feedbackG, *sourceG);
 		}
 	}
 
@@ -292,7 +279,6 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 		for (const auto& grid : feedback_float_grids) {
 			builder.addGrid(grid, grid->getName());
 		}
-
 		for (const auto& grid : feedback_vector_grids) {
 			builder.addGrid(grid, grid->getName());
 		}
@@ -302,8 +288,19 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 			builder.addGridSDF(sdf_grid, "collision_sdf");
 		}
 
+		// Add source grids as inputs for CUDA sourcing
+		for (const auto& grid : source_float_grids) {
+			// Ensure names: src_temperature, src_density, src_fuel
+			builder.addGrid(grid, grid->getName());
+		}
+		for (const auto& grid : source_vector_grids) {
+			// Ensure name: src_vel
+			builder.addGrid(grid, grid->getName());
+		}
+
 		builder.build();
 	}
+
 
 	if (data.size() == 0) {
 		cookparms.sopAddWarning(SOP_MESSAGE, "No active voxels found. Simulation skipped.");
@@ -338,7 +335,20 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 		params.vorticityScale = sopparms.getVorticity();
 		params.factorScale = sopparms.getFactor_scale();
 
+		params.disturbanceEnable = sopparms.getDisturbance_enable();
+		params.disturbanceSwirl = sopparms.getDisturbance_swirl();
+		params.disturbanceStrength = sopparms.getDisturbance_strength();
+		params.disturbanceThreshold = sopparms.getDisturbance_threshold();
+		params.disturbanceGain = sopparms.getDisturbance_gain();
+		params.disturbanceFrequency = (float)sopparms.getDisturbance_frequency();
+		params.substeps = sopparms.getSubsteps();
+		params.gravity = sopparms.getGravity();
+
+		params.maskDensityMin = sopparms.getMaskdensitymin();
+		params.maskDensityMax = sopparms.getMaskdensitymax();
+
 		Compute_Sim(data, handle, iterations, deltaTime, primaryVelocityGrid->voxelSize()[0], params, has_collision, stream);
+		
 	}
 
 	cudaStreamSynchronize(stream);
@@ -347,11 +357,17 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	{
 		for (const auto& grid : feedback_float_grids) {
 			auto out = builder.writeIndexGrid<openvdb::FloatGrid>(grid->getName(), grid->voxelSize()[0]);
+			if (debugOutput) {
+				std::printf("Write back grid-> %s\n", grid->getName().c_str());
+			}
 			GU_PrimVDB::buildFromGrid(*detail, out, nullptr, out->getName().c_str());
 		}
 
 		for (const auto& grid : feedback_vector_grids) {
 			auto out = builder.writeIndexGrid<openvdb::VectorGrid>(grid->getName(), grid->voxelSize()[0]);
+			if (debugOutput) {
+				std::printf("Write back grid-> %s\n", grid->getName().c_str());
+			}
 			GU_PrimVDB::buildFromGrid(*detail, out, nullptr, out->getName().c_str());
 		}
 	}
