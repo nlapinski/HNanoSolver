@@ -277,55 +277,109 @@ class ScopedTimerGPU {
 };
 
 
+//template <typename T>
+//struct DeviceMemory {
+//	T* ptr = nullptr;
+//	size_t count = 0;
+//	cudaStream_t stream_ = nullptr;  // Store stream for async free
+//
+//	DeviceMemory() = default;  // Default constructor needed for map operations
+//
+//	DeviceMemory(size_t num_elements, cudaStream_t stream) : count(num_elements), stream_(stream) {
+//		if (count > 0) {
+//			CUDA_CHECK(cudaMallocAsync(&ptr, count * sizeof(T), stream_));
+//		}
+//	}
+//
+//	// Disable copy constructor and assignment
+//	DeviceMemory(const DeviceMemory&) = delete;
+//	DeviceMemory& operator=(const DeviceMemory&) = delete;
+//
+//	// Move constructor
+//	DeviceMemory(DeviceMemory&& other) noexcept : ptr(other.ptr), count(other.count), stream_(other.stream_) {
+//		other.ptr = nullptr;
+//		other.count = 0;
+//	}
+//
+//	// Move assignment
+//	DeviceMemory& operator=(DeviceMemory&& other) noexcept {
+//		if (this != &other) {
+//			// Free existing resource if any
+//			if (ptr) {
+//				// Queue the free operation on the associated stream
+//				cudaFreeAsync(ptr, stream_);
+//				// Note: No CUDA_CHECK in destructor/move assignment free path. Log errors if needed.
+//			}
+//			// Transfer ownership
+//			ptr = other.ptr;
+//			count = other.count;
+//			stream_ = other.stream_;
+//			// Nullify the source object
+//			other.ptr = nullptr;
+//			other.count = 0;
+//		}
+//		return *this;
+//	}
+//
+//	~DeviceMemory() {
+//		if (ptr) {
+//			cudaFreeAsync(ptr, stream_);
+//		}
+//	}
+//
+//	T* get() const { return ptr; }
+//	size_t size() const { return count; }
+//	size_t bytes() const { return count * sizeof(T); }
+//};
+
 template <typename T>
 struct DeviceMemory {
 	T* ptr = nullptr;
 	size_t count = 0;
-	cudaStream_t stream_ = nullptr;  // Store stream for async free
+	cudaStream_t stream_ = nullptr;  // kept only for async copies (not for free)
 
-	DeviceMemory() = default;  // Default constructor needed for map operations
+	DeviceMemory() = default;
 
-	DeviceMemory(size_t num_elements, cudaStream_t stream) : count(num_elements), stream_(stream) {
-		if (count > 0) {
-			CUDA_CHECK(cudaMallocAsync(&ptr, count * sizeof(T), stream_));
+	DeviceMemory(size_t n, cudaStream_t s) : count(n), stream_(s) {
+		if (count) {
+			cudaError_t err = cudaMalloc(&ptr, count * sizeof(T));
+			if (err != cudaSuccess) {
+				ptr = nullptr;
+				count = 0;
+				throw std::runtime_error(cudaGetErrorString(err));
+			}
 		}
 	}
 
-	// Disable copy constructor and assignment
 	DeviceMemory(const DeviceMemory&) = delete;
 	DeviceMemory& operator=(const DeviceMemory&) = delete;
 
-	// Move constructor
-	DeviceMemory(DeviceMemory&& other) noexcept : ptr(other.ptr), count(other.count), stream_(other.stream_) {
-		other.ptr = nullptr;
-		other.count = 0;
+	DeviceMemory(DeviceMemory&& o) noexcept : ptr(o.ptr), count(o.count), stream_(o.stream_) {
+		o.ptr = nullptr;
+		o.count = 0;
+		o.stream_ = nullptr;
 	}
-
-	// Move assignment
-	DeviceMemory& operator=(DeviceMemory&& other) noexcept {
-		if (this != &other) {
-			// Free existing resource if any
-			if (ptr) {
-				// Queue the free operation on the associated stream
-				cudaFreeAsync(ptr, stream_);
-				// Note: No CUDA_CHECK in destructor/move assignment free path. Log errors if needed.
-			}
-			// Transfer ownership
-			ptr = other.ptr;
-			count = other.count;
-			stream_ = other.stream_;
-			// Nullify the source object
-			other.ptr = nullptr;
-			other.count = 0;
+	DeviceMemory& operator=(DeviceMemory&& o) noexcept {
+		if (this != &o) {
+			reset();
+			ptr = o.ptr;
+			count = o.count;
+			stream_ = o.stream_;
+			o.ptr = nullptr;
+			o.count = 0;
+			o.stream_ = nullptr;
 		}
 		return *this;
 	}
 
-	~DeviceMemory() {
+	void reset() noexcept {
 		if (ptr) {
-			cudaFreeAsync(ptr, stream_);
+			(void)cudaFree(ptr);
+			ptr = nullptr;
+			count = 0;
 		}
 	}
+	~DeviceMemory() { reset(); }
 
 	T* get() const { return ptr; }
 	size_t size() const { return count; }

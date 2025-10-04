@@ -587,7 +587,7 @@ __global__ void redBlackGaussSeidelUpdate_opt(const nanovdb::NanoGrid<nanovdb::V
 	}
 }
 
-
+// pressure solve
 __global__ void redBlackGaussSeidelUpdate(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
                                           const nanovdb::Coord* __restrict__ d_coord, const float* __restrict__ divergence,
                                           float* __restrict__ pressure, const float dx, const size_t totalVoxels, const int color,
@@ -657,7 +657,7 @@ __global__ void restrict_to_4x4x4(const float* inData, float* outData, const siz
 	outData[tid] = sum / 8.0f;
 }
 
-
+// pressure single
 __global__ void redBlackGaussSeidelUpdate_single(const IndexOffsetSampler<0>& sampler, const nanovdb::Coord* d_coord,
                                                  const float* divergence, float* pressure, const float dx, const size_t totalVoxels,
                                                  const float omega, const int color) {

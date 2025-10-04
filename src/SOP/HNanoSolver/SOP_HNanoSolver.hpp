@@ -11,6 +11,9 @@
 #include <PRM/PRM_TemplateBuilder.h>
 #include <SOP/SOP_Node.h>
 #include <SOP/SOP_NodeVerb.h>
+#include <nanovdb/cuda/DeviceBuffer.h>
+#include <openvdb/tools/Composite.h>
+#include <openvdb/tools/VolumeAdvect.h>
 
 #include "../Utils/GridData.hpp"
 #include "SOP_HNanoSolver.proto.h"
@@ -35,7 +38,10 @@ struct CombustionParams {
 	float gravity;
 	float maskDensityMin;
 	float maskDensityMax;
+	int downloadVel;
+	int simReset;
 };
+
 
 class SOP_HNanoSolver final : public SOP_Node {
    public:
@@ -45,6 +51,8 @@ class SOP_HNanoSolver final : public SOP_Node {
 		// It means we cook at every frame change.
 		OP_Node::flags().setTimeDep(true);
 	}
+	
+	
 
 	~SOP_HNanoSolver() override = default;
 
@@ -56,7 +64,6 @@ class SOP_HNanoSolver final : public SOP_Node {
 
 	const SOP_NodeVerb* cookVerb() const override;
 
-
 	const char* inputLabel(OP_InputIdx idx) const override {
 		switch (idx) {
 			case 0:
@@ -67,29 +74,41 @@ class SOP_HNanoSolver final : public SOP_Node {
 	}
 };
 
+extern "C" void HNS_DestroyContext(void** ctx);
+
 class SOP_HNanoSolverCache final : public SOP_NodeCache {
    public:
-	SOP_HNanoSolverCache() : SOP_NodeCache() {}
-	~SOP_HNanoSolverCache() override = default;
+	SOP_HNanoSolverCache() : SOP_NodeCache(), user(nullptr) {}
+	virtual ~SOP_HNanoSolverCache(){};
+	void* user;
+	// Persist the NanoVDB device handle across cooks:
+	nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> nvdb;
+	openvdb::MaskGrid::Ptr domain;
+
+
+	void clear(){
+		// Kill the GPU sim context (frees device buffers/stream safely)
+		if (user) {
+			HNS_DestroyContext(&user);
+		}
+		nvdb = nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>();
+		domain.reset();
+	}
 };
 
 class SOP_HNanoSolverVerb final : public SOP_NodeVerb {
    public:
 	SOP_HNanoSolverVerb() = default;
 	~SOP_HNanoSolverVerb() override = default;
-	[[nodiscard]] SOP_NodeParms* allocParms() const override { return new SOP_HNanoSolverParms; }
-	[[nodiscard]] SOP_NodeCache* allocCache() const override { return new SOP_HNanoSolverCache(); }
-	[[nodiscard]] UT_StringHolder name() const override { return "HNanoSolver"; }
-
+	virtual SOP_NodeParms* allocParms() const { return new SOP_HNanoSolverParms; }
+	virtual SOP_NodeCache* allocCache() const { return new SOP_HNanoSolverCache(); }
+	virtual UT_StringHolder name() const { return "HNanoSolver"; }
 	SOP_NodeVerb::CookMode cookMode(const SOP_NodeParms* parms) const override { return SOP_NodeVerb::COOK_GENERATOR; }
-
 	void cook(const SOP_NodeVerb::CookParms& cookparms) const override;
-
 	static const SOP_NodeVerb::Register<SOP_HNanoSolverVerb> theVerb;
 	static const char* const theDsFile;
 };
 
 extern "C" void CreateIndexGrid(HNS::GridIndexedData& data, nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle, float voxelSize);
-
 extern "C" void Compute_Sim(HNS::GridIndexedData& data, const nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle, int iteration,
                             float dt, float voxelSize, const CombustionParams& params, bool hasCollision, const cudaStream_t& stream);

@@ -11,12 +11,14 @@
 #include "../Utils/ScopedTimer.hpp"
 #include "../Utils/Utils.hpp"
 #include "nanovdb/tools/CreateNanoGrid.h"
+#include "nanovdb/NanoVDB.h"
+
+
 
 void newSopOperator(OP_OperatorTable* table) {
 	table->addOperator(new OP_Operator("hnanosolver", "HNanoSolver", SOP_HNanoSolver::myConstructor, SOP_HNanoSolver::buildTemplates(), 2,
 	                                   3, nullptr, OP_FLAG_GENERATOR));
 }
-
 
 const char* const SOP_HNanoSolverVerb::theDsFile = R"THEDSFILE(
 {
@@ -28,6 +30,22 @@ const char* const SOP_HNanoSolverVerb::theDsFile = R"THEDSFILE(
         size    1
         range   { 0 1 }
 		default { "0" }
+	}
+	parm {
+		name "download_vel"
+		label "Download vel"
+        type    integer
+        size    1
+        range   { 0 1 }
+		default { "0" }
+	}
+	parm {
+		name "sim_reset"
+		label "Reset Sim"
+        type    integer
+        size    1
+        range   { 0 1 }
+		default { "$F==$RFSTART" }
 	}
     parm {
         name    "timestep"
@@ -175,201 +193,146 @@ const SOP_NodeVerb::Register<SOP_HNanoSolverVerb> SOP_HNanoSolverVerb::theVerb;
 const SOP_NodeVerb* SOP_HNanoSolver::cookVerb() const { return SOP_HNanoSolverVerb::theVerb.get(); }
 
 
+
+// Opaque GPU context. Implemented in HNanoSolver.cu.
+extern "C" void HNS_DownloadForOutput(void* ctx, HNS::GridIndexedData& data);
+extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const CombustionParams& params);
+extern "C" void HNS_UploadSources(void* ctx, HNS::GridIndexedData& data);
+extern "C" void HNS_EnsureContext(void** ctx, HNS::GridIndexedData& data, const nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle, float voxelSize, bool hasCollision);
+extern "C" void HNS_DestroyContext(void** ctx);
+
 void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
-	const auto& sopparms = cookparms.parms<SOP_HNanoSolverParms>();
-	const auto sopcache = dynamic_cast<SOP_HNanoSolverCache*>(cookparms.cache());
+	const auto& P = cookparms.parms<SOP_HNanoSolverParms>();
+	auto* cache = dynamic_cast<SOP_HNanoSolverCache*>(cookparms.cache());
+	if (!cache) {
+		
+		std::printf("No sop cache!?\n");
+	}
 
-	openvdb_houdini::HoudiniInterrupter boss("Computing VDB grids");
+	GU_Detail* gdp = cookparms.gdh().gdpNC();
 
-	GU_Detail* detail = cookparms.gdh().gdpNC();
-	const GU_Detail* feedback_input = cookparms.inputGeo(0);
-	const GU_Detail* source_input = cookparms.inputGeo(1);
-	const GU_Detail* collision_input = cookparms.inputGeo(2);
+	CombustionParams params{};
+	params.expansionRate = P.getExpansion_rate();
+	params.temperatureRelease = P.getTemperature_gain();
+	params.buoyancyStrength = P.getBuoyancy_strength();
+	params.ambientTemp = P.getAmbient_temp();
+	params.vorticityScale = P.getVorticity();
+	params.factorScale = P.getFactor_scale();
+	params.disturbanceEnable = P.getDisturbance_enable();
+	params.disturbanceSwirl = P.getDisturbance_swirl();
+	params.disturbanceStrength = P.getDisturbance_strength();
+	params.disturbanceThreshold = P.getDisturbance_threshold();
+	params.disturbanceGain = P.getDisturbance_gain();
+	params.disturbanceFrequency = float(P.getDisturbance_frequency());
+	params.substeps = P.getSubsteps(); 
+	params.gravity = P.getGravity();
+	params.maskDensityMin = P.getMaskdensitymin();
+	params.maskDensityMax = P.getMaskdensitymax();
+	params.downloadVel = P.getDownload_vel();
+	params.simReset = P.getSim_reset();
 
-	std::vector<openvdb::GridBase::Ptr> feedback_grids;
-	std::vector<openvdb::GridBase::Ptr> source_grids;     // Velocity grid ( len = 1 )
-	std::vector<openvdb::GridBase::Ptr> collision_grids;  // SDF grid for collisions
+	if (params.simReset) {
+		cache->clear();
+	}
+
+	std::vector<openvdb::GridBase::Ptr> fb, src, col;
+	if (auto err = loadGrid(cookparms.inputGeo(0), fb); err != UT_ERROR_NONE) {
+		cookparms.sopAddError(SOP_MESSAGE, "Failed to load feedback grid");
+		return;
+	}
+	loadGrid(cookparms.inputGeo(1), src);
+	loadGrid(cookparms.inputGeo(2), col);
+
+	std::vector<openvdb::FloatGrid::Ptr> fbF, srcF;
+	std::vector<openvdb::VectorGrid::Ptr> fbV, srcV;
+	openvdb::FloatGrid::Ptr sdf;
+	bool hasCollision = false;
+
+	for (auto& g : fb) {
+		if (auto v = openvdb::gridPtrCast<openvdb::VectorGrid>(g))
+			fbV.push_back(v);
+		else if (auto f = openvdb::gridPtrCast<openvdb::FloatGrid>(g))
+			fbF.push_back(f);
+	}
+	for (auto& g : src) {
+		if (auto v = openvdb::gridPtrCast<openvdb::VectorGrid>(g))
+			srcV.push_back(v);
+		else if (auto f = openvdb::gridPtrCast<openvdb::FloatGrid>(g))
+			srcF.push_back(f);
+	}
+	for (auto& g : col) {
+		if (auto f = openvdb::gridPtrCast<openvdb::FloatGrid>(g)) {
+			sdf = f;
+			hasCollision = true;
+			break;
+		}
+	}
+
+	if (fbV.empty()) {
+		cookparms.sopAddError(SOP_MESSAGE, "Velocity VectorGrid required on input 0");
+		return;
+	}
+
+	const auto primaryV = fbV[0];
+	const float voxelSize = float(primaryV->voxelSize()[0]);
+
+	openvdb::MaskGrid::Ptr domain = openvdb::MaskGrid::create();
+	domain->tree().topologyUnion(primaryV->tree());
+	openvdb::tools::morphology::Morphology<openvdb::MaskTree>(domain->tree()).dilateVoxels(P.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX, openvdb::tools::IGNORE_TILES);
 	
-	int debugOutput = sopparms.getDebug_output();
-
-	if (auto err = loadGrid(feedback_input, feedback_grids); err != UT_ERROR_NONE) {
-		err = cookparms.sopAddError(SOP_MESSAGE, "Failed to load feedback grid");
-		return;
-	}
-
-	if (auto err = loadGrid(source_input, source_grids); err != UT_ERROR_NONE && err != UT_ERROR_ABORT) {
-		err = cookparms.sopAddError(SOP_MESSAGE, "Failed to load source grid");
-		return;
-	}
-
-	// Load collision SDF grid
-	openvdb::FloatGrid::Ptr sdf_grid;
-	bool has_collision = false;
-	if (collision_input) {
-		if (auto err = loadGrid(collision_input, collision_grids); err != UT_ERROR_NONE && err != UT_ERROR_ABORT) {
-			cookparms.sopAddWarning(SOP_MESSAGE, "Failed to load collision grid, continuing without collision");
-		} else if (!collision_grids.empty()) {
-			// Find the first float grid to use as SDF
-			for (const auto& grid : collision_grids) {
-				if (auto float_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(grid)) {
-					sdf_grid = float_grid;
-					has_collision = true;
-					break;
-				}
-			}
-
-			if (!has_collision) {
-				cookparms.sopAddWarning(SOP_MESSAGE, "No valid SDF grid found in collision input, continuing without collision");
-			}
-		}
-	}
-
-	std::vector<openvdb::FloatGrid::Ptr> feedback_float_grids;
-	std::vector<openvdb::FloatGrid::Ptr> source_float_grids;
-	std::vector<openvdb::VectorGrid::Ptr> feedback_vector_grids;
-	std::vector<openvdb::VectorGrid::Ptr> source_vector_grids;
-
-	for (const auto& grid : feedback_grids) {
-		if (auto float_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(grid)) {
-			feedback_float_grids.push_back(float_grid);
-		} else if (auto vector_grid = openvdb::gridPtrCast<openvdb::VectorGrid>(grid)) {
-			feedback_vector_grids.push_back(vector_grid);
-		}
-	}
-
-	bool isSourced = !source_grids.empty();
-
-	if (isSourced) {
-		if (debugOutput) {
-			ScopedTimer timer("HNanoSolver::Sourcing");
-		}
-		for (const auto& grid : source_grids) {
-			if (auto float_grid = openvdb::gridPtrCast<openvdb::FloatGrid>(grid)) {
-				source_float_grids.push_back(float_grid);
-			} else if (auto vector_grid = openvdb::gridPtrCast<openvdb::VectorGrid>(grid)) {
-				source_vector_grids.push_back(vector_grid);
-			}
-		}
-	}
-
-	// Assume the first vector grid is the primary one for topology/voxel size
-	const openvdb::VectorGrid::Ptr primaryVelocityGrid = feedback_vector_grids[0];
-	const float voxelSize = static_cast<float>(primaryVelocityGrid->voxelSize()[0]);  // Assuming uniform voxels
-	const float deltaTime = static_cast<float>(sopparms.getTimestep());
-
-	openvdb::MaskGrid::Ptr domainGrid = openvdb::MaskGrid::create();
-	{
-		if (debugOutput) {
-			ScopedTimer timer("HNanoSolver::DefineTopology");
-		}
-		domainGrid->tree().topologyUnion(primaryVelocityGrid->tree());
-
-		openvdb::tools::morphology::Morphology<openvdb::MaskTree> morph(domainGrid->tree());
-		morph.dilateVoxels(sopparms.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX, openvdb::tools::IGNORE_TILES);
-
-		if (has_collision && sdf_grid) {
-			domainGrid->tree().topologyUnion(sdf_grid->tree());
-		}
-	}
+	
+	if (hasCollision && sdf) domain->tree().topologyUnion(sdf->tree());
 
 	HNS::GridIndexedData data;
-	HNS::IndexGridBuilder<openvdb::MaskGrid> builder(domainGrid, &data);
-	builder.debugOutput = debugOutput;
+	HNS::IndexGridBuilder<openvdb::MaskGrid> builder(domain, &data);
 	builder.setAllocType(AllocationType::Standard);
-	{
-		for (const auto& grid : feedback_float_grids) {
-			builder.addGrid(grid, grid->getName());
-		}
-		for (const auto& grid : feedback_vector_grids) {
-			builder.addGrid(grid, grid->getName());
-		}
-
-		// Add SDF grid if available
-		if (has_collision && sdf_grid) {
-			builder.addGridSDF(sdf_grid, "collision_sdf");
-		}
-
-		// Add source grids as inputs for CUDA sourcing
-		for (const auto& grid : source_float_grids) {
-			// Ensure names: src_temperature, src_density, src_fuel
-			builder.addGrid(grid, grid->getName());
-		}
-		for (const auto& grid : source_vector_grids) {
-			// Ensure name: src_vel
-			builder.addGrid(grid, grid->getName());
-		}
-
-		builder.build();
-	}
-
+	for (auto& f : fbF) builder.addGrid(f, f->getName());
+	for (auto& v : fbV) builder.addGrid(v, v->getName());
+	if (hasCollision && sdf) builder.addGridSDF(sdf, "collision_sdf");
+	for (auto& f : srcF) builder.addGrid(f, f->getName());
+	for (auto& v : srcV) builder.addGrid(v, v->getName());
+	builder.build();
 
 	if (data.size() == 0) {
-		cookparms.sopAddWarning(SOP_MESSAGE, "No active voxels found. Simulation skipped.");
-		return;  // Nothing to simulate
+		gdp->clearAndDestroy();
+		cookparms.sopAddWarning(SOP_MESSAGE, "No active voxels");
+		return;
 	}
 
-	// --- 4. Create NanoVDB Acceleration Structure ---
-	nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> handle;
-	{
-		if (debugOutput) {
-			ScopedTimer timer("Building NanoVDB Index Grid");
-		}
-		try {
-			CreateIndexGrid(data, handle, voxelSize);
-		} catch (const std::exception& e) {
-			cookparms.sopAddError(SOP_MESSAGE, (std::string("Failed to create NanoVDB grid: ") + e.what()).c_str());
-			return;
-		}
+	try {
+		nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> handle;
+		CreateIndexGrid(data, handle, voxelSize);  // builds device buffer
+		cache->nvdb = std::move(handle);           // MOVE, do not copy (copy-assign is deleted)
+	} catch (const std::exception& e) {
+		cookparms.sopAddError(SOP_MESSAGE, e.what());
+		return;
 	}
 
-	cudaStream_t stream;
-	cudaStreamCreate(&stream);
-
-	{
-		const int iterations = sopparms.getIterations();
-
-		CombustionParams params{};
-		params.expansionRate = sopparms.getExpansion_rate();
-		params.temperatureRelease = sopparms.getTemperature_gain();
-		params.buoyancyStrength = sopparms.getBuoyancy_strength();
-		params.ambientTemp = sopparms.getAmbient_temp();
-		params.vorticityScale = sopparms.getVorticity();
-		params.factorScale = sopparms.getFactor_scale();
-
-		params.disturbanceEnable = sopparms.getDisturbance_enable();
-		params.disturbanceSwirl = sopparms.getDisturbance_swirl();
-		params.disturbanceStrength = sopparms.getDisturbance_strength();
-		params.disturbanceThreshold = sopparms.getDisturbance_threshold();
-		params.disturbanceGain = sopparms.getDisturbance_gain();
-		params.disturbanceFrequency = (float)sopparms.getDisturbance_frequency();
-		params.substeps = sopparms.getSubsteps();
-		params.gravity = sopparms.getGravity();
-
-		params.maskDensityMin = sopparms.getMaskdensitymin();
-		params.maskDensityMax = sopparms.getMaskdensitymax();
-
-		Compute_Sim(data, handle, iterations, deltaTime, primaryVelocityGrid->voxelSize()[0], params, has_collision, stream);
-		
+	try {
+		HNS_EnsureContext(reinterpret_cast<void**>(&cache->user), data, cache->nvdb, voxelSize, hasCollision);
+	} catch (const std::exception& e) {
+		cookparms.sopAddError(SOP_MESSAGE, e.what());
+		return;
 	}
 
-	cudaStreamSynchronize(stream);
-	cudaStreamDestroy(stream);
+	try {
+		HNS_UploadSources(cache->user, data);
+		HNS_Advance(cache->user, P.getIterations(), float(P.getTimestep()), params);
+		gdp->clearAndDestroy();
+		HNS_DownloadForOutput(cache->user, data);
+	} catch (const std::exception& e) {
+		cookparms.sopAddError(SOP_MESSAGE, e.what());
+		return;
+	}
 
-	{
-		for (const auto& grid : feedback_float_grids) {
-			auto out = builder.writeIndexGrid<openvdb::FloatGrid>(grid->getName(), grid->voxelSize()[0]);
-			if (debugOutput) {
-				std::printf("Write back grid-> %s\n", grid->getName().c_str());
-			}
-			GU_PrimVDB::buildFromGrid(*detail, out, nullptr, out->getName().c_str());
-		}
-
-		for (const auto& grid : feedback_vector_grids) {
-			auto out = builder.writeIndexGrid<openvdb::VectorGrid>(grid->getName(), grid->voxelSize()[0]);
-			if (debugOutput) {
-				std::printf("Write back grid-> %s\n", grid->getName().c_str());
-			}
-			GU_PrimVDB::buildFromGrid(*detail, out, nullptr, out->getName().c_str());
+	for (auto& f : fbF) {
+		auto out = builder.writeIndexGrid<openvdb::FloatGrid>(f->getName(), f->voxelSize()[0]);
+		GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
+	}
+	if (params.downloadVel) {
+		for (auto& v : fbV) {
+			auto out = builder.writeIndexGrid<openvdb::VectorGrid>(v->getName(), v->voxelSize()[0]);
+			GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
 		}
 	}
 }

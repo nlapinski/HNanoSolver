@@ -21,6 +21,8 @@ struct CombustionParams {
 	float gravity;
 	float maskDensityMin;
 	float maskDensityMax;
+	int downloadVel;
+	int simReset;
 };
 
 __global__ void advect_scalar(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __restrict__ domainGrid,
