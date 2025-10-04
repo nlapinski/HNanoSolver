@@ -193,19 +193,18 @@ const SOP_NodeVerb::Register<SOP_HNanoSolverVerb> SOP_HNanoSolverVerb::theVerb;
 const SOP_NodeVerb* SOP_HNanoSolver::cookVerb() const { return SOP_HNanoSolverVerb::theVerb.get(); }
 
 
-
 // Opaque GPU context. Implemented in HNanoSolver.cu.
 extern "C" void HNS_DownloadForOutput(void* ctx, HNS::GridIndexedData& data);
 extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const CombustionParams& params);
 extern "C" void HNS_UploadSources(void* ctx, HNS::GridIndexedData& data);
-extern "C" void HNS_EnsureContext(void** ctx, HNS::GridIndexedData& data, const nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle, float voxelSize, bool hasCollision);
+extern "C" void HNS_EnsureContext(void** ctx, HNS::GridIndexedData& data, const nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle,
+                                  float voxelSize, bool hasCollision);
 extern "C" void HNS_DestroyContext(void** ctx);
 
 void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	const auto& P = cookparms.parms<SOP_HNanoSolverParms>();
 	auto* cache = dynamic_cast<SOP_HNanoSolverCache*>(cookparms.cache());
 	if (!cache) {
-		
 		std::printf("No sop cache!?\n");
 	}
 
@@ -224,7 +223,7 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	params.disturbanceThreshold = P.getDisturbance_threshold();
 	params.disturbanceGain = P.getDisturbance_gain();
 	params.disturbanceFrequency = float(P.getDisturbance_frequency());
-	params.substeps = P.getSubsteps(); 
+	params.substeps = P.getSubsteps();
 	params.gravity = P.getGravity();
 	params.maskDensityMin = P.getMaskdensitymin();
 	params.maskDensityMax = P.getMaskdensitymax();
@@ -276,21 +275,54 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	const auto primaryV = fbV[0];
 	const float voxelSize = float(primaryV->voxelSize()[0]);
 
+	// Domain mask with padding
 	openvdb::MaskGrid::Ptr domain = openvdb::MaskGrid::create();
+	domain->setTransform(primaryV->transform().copy());
 	domain->tree().topologyUnion(primaryV->tree());
-	openvdb::tools::morphology::Morphology<openvdb::MaskTree>(domain->tree()).dilateVoxels(P.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX, openvdb::tools::IGNORE_TILES);
-	
-	
-	if (hasCollision && sdf) domain->tree().topologyUnion(sdf->tree());
+	openvdb::tools::morphology::Morphology<openvdb::MaskTree>(domain->tree())
+	    .dilateVoxels(P.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX, openvdb::tools::IGNORE_TILES);
+	if (hasCollision && sdf) {
+		domain->tree().topologyUnion(sdf->tree());
+	}
 
+	// Tile activity mask from domain leaves
+	openvdb::MaskGrid::Ptr tileMask = openvdb::MaskGrid::create(false);
+	tileMask->setTransform(domain->transform().copy());
+	{
+		auto& ttree = tileMask->tree();
+		for (auto it = domain->tree().cbeginLeaf(); it; ++it) {
+			const openvdb::Coord org = it->origin();
+			const openvdb::CoordBBox bbox(org, org + openvdb::Coord(7, 7, 7));
+			ttree.fill(bbox, true, true);
+		}
+		if (hasCollision && sdf) {
+			ttree.topologyUnion(sdf->tree());
+		}
+		openvdb::tools::morphology::Morphology<openvdb::MaskTree>(ttree).dilateVoxels(P.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX,
+		                                                                              openvdb::tools::IGNORE_TILES);
+	}
+
+	// Convert tile mask to float activity grid
+	openvdb::FloatGrid::Ptr tileActivity = openvdb::FloatGrid::create(0.0f);
+	tileActivity->setName("__tile_activity");
+	tileActivity->setTransform(domain->transform().copy());
+	tileActivity->tree().topologyUnion(tileMask->tree());
+	for (auto it = tileActivity->beginValueOn(); it; ++it) {
+		it.setValue(1.0f);
+	}
+
+	// Build indexed payload
 	HNS::GridIndexedData data;
 	HNS::IndexGridBuilder<openvdb::MaskGrid> builder(domain, &data);
 	builder.setAllocType(AllocationType::Standard);
+
 	for (auto& f : fbF) builder.addGrid(f, f->getName());
 	for (auto& v : fbV) builder.addGrid(v, v->getName());
 	if (hasCollision && sdf) builder.addGridSDF(sdf, "collision_sdf");
 	for (auto& f : srcF) builder.addGrid(f, f->getName());
 	for (auto& v : srcV) builder.addGrid(v, v->getName());
+	builder.addGrid(tileActivity, tileActivity->getName());
+
 	builder.build();
 
 	if (data.size() == 0) {
@@ -301,8 +333,8 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 
 	try {
 		nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> handle;
-		CreateIndexGrid(data, handle, voxelSize);  // builds device buffer
-		cache->nvdb = std::move(handle);           // MOVE, do not copy (copy-assign is deleted)
+		CreateIndexGrid(data, handle, voxelSize);
+		cache->nvdb = std::move(handle);
 	} catch (const std::exception& e) {
 		cookparms.sopAddError(SOP_MESSAGE, e.what());
 		return;

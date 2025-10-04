@@ -80,19 +80,21 @@ class SOP_HNanoSolverCache final : public SOP_NodeCache {
    public:
 	SOP_HNanoSolverCache() : SOP_NodeCache(), user(nullptr) {}
 	virtual ~SOP_HNanoSolverCache(){};
-	void* user;
-	// Persist the NanoVDB device handle across cooks:
+	void* user = nullptr;
 	nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> nvdb;
-	openvdb::MaskGrid::Ptr domain;
+	openvdb::MaskGrid::Ptr domainMask;
+	openvdb::CoordBBox fixedDomainBox;  // persistent fixed box for the whole sim
+	size_t lastN = 0;
+	float voxelSize = 0.f;
 
-
-	void clear(){
-		// Kill the GPU sim context (frees device buffers/stream safely)
-		if (user) {
-			HNS_DestroyContext(&user);
-		}
+	void clear() {
+		if (user) HNS_DestroyContext(&user);
+		user = nullptr;
 		nvdb = nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>();
-		domain.reset();
+		domainMask.reset();
+		fixedDomainBox = openvdb::CoordBBox();
+		lastN = 0;
+		voxelSize = 0.f;
 	}
 };
 

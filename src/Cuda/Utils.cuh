@@ -28,46 +28,46 @@ inline size_t blocksPerGrid(const size_t numItems, const size_t threadsPerBlock)
 	return (numItems + threadsPerBlock - 1) / threadsPerBlock;
 }
 
-__device__ __forceinline__ float computeError(const float original, const float backward) {
+__device__ inline float computeError(const float original, const float backward) {
 	return __fmul_rn(0.5f, __fsub_rn(original, backward));
 }
 
-__device__ __forceinline__ nanovdb::Vec3f computeError(const nanovdb::Vec3f& original, const nanovdb::Vec3f& backward) {
+__device__ inline nanovdb::Vec3f computeError(const nanovdb::Vec3f& original, const nanovdb::Vec3f& backward) {
 	return nanovdb::Vec3f(computeError(original[0], backward[0]), computeError(original[1], backward[1]),
 	                      computeError(original[2], backward[2]));
 }
 
-__device__ __forceinline__ float absValue(const float x) { return fabsf(x); }
+__device__ inline float absValue(const float x) { return fabsf(x); }
 
-__device__ __forceinline__ nanovdb::Vec3f absValue(const nanovdb::Vec3f& v) {
+__device__ inline nanovdb::Vec3f absValue(const nanovdb::Vec3f& v) {
 	return nanovdb::Vec3f(fabsf(v[0]), fabsf(v[1]), fabsf(v[2]));
 }
 
-__device__ __forceinline__ float computeMaxCorrection(const float forward, const float original) {
+__device__ inline float computeMaxCorrection(const float forward, const float original) {
 	return __fmul_rn(0.5f, fabsf(__fsub_rn(forward, original)));
 }
-__device__ __forceinline__ nanovdb::Vec3f computeMaxCorrection(const nanovdb::Vec3f& forward, const nanovdb::Vec3f& original) {
+__device__ inline nanovdb::Vec3f computeMaxCorrection(const nanovdb::Vec3f& forward, const nanovdb::Vec3f& original) {
 	return nanovdb::Vec3f(computeMaxCorrection(forward[0], original[0]), computeMaxCorrection(forward[1], original[1]),
 	                      computeMaxCorrection(forward[2], original[2]));
 }
 
 
-__device__ __forceinline__ float clampValue(const float x, const float minVal, const float maxVal) {
+__device__ inline float clampValue(const float x, const float minVal, const float maxVal) {
 	return fminf(fmaxf(x, minVal), maxVal);
 }
 
-__device__ __forceinline__ nanovdb::Vec3f clampValue(const nanovdb::Vec3f& x, const nanovdb::Vec3f& minVal, const nanovdb::Vec3f& maxVal) {
+__device__ inline nanovdb::Vec3f clampValue(const nanovdb::Vec3f& x, const nanovdb::Vec3f& minVal, const nanovdb::Vec3f& maxVal) {
 	return nanovdb::Vec3f(fminf(fmaxf(x[0], minVal[0]), maxVal[0]), fminf(fmaxf(x[1], minVal[1]), maxVal[1]),
 	                      fminf(fmaxf(x[2], minVal[2]), maxVal[2]));
 }
 
-__device__ __forceinline__ float lerp(const float a, const float b, const float t) { return a + t * (b - a); }
+__device__ inline float lerp(const float a, const float b, const float t) { return a + t * (b - a); }
 
-__device__ __forceinline__ nanovdb::Vec3f lerp(const nanovdb::Vec3f& a, const nanovdb::Vec3f& b, const float t) { return a + (b - a) * t; }
+__device__ inline nanovdb::Vec3f lerp(const nanovdb::Vec3f& a, const nanovdb::Vec3f& b, const float t) { return a + (b - a) * t; }
 
-__device__ __forceinline__ float enforceNonNegative(const float x) { return fmaxf(0.0f, x); }
+__device__ inline float enforceNonNegative(const float x) { return fmaxf(0.0f, x); }
 
-__device__ __forceinline__ int clampCoord(const int c, const int minC, const int maxC) {
+__device__ inline int clampCoord(const int c, const int minC, const int maxC) {
 	if (c < minC) return minC;
 	if (c > maxC) return maxC;
 	return c;
@@ -275,62 +275,6 @@ class ScopedTimerGPU {
 	cudaEvent_t start{};
 	cudaEvent_t stop{};
 };
-
-
-//template <typename T>
-//struct DeviceMemory {
-//	T* ptr = nullptr;
-//	size_t count = 0;
-//	cudaStream_t stream_ = nullptr;  // Store stream for async free
-//
-//	DeviceMemory() = default;  // Default constructor needed for map operations
-//
-//	DeviceMemory(size_t num_elements, cudaStream_t stream) : count(num_elements), stream_(stream) {
-//		if (count > 0) {
-//			CUDA_CHECK(cudaMallocAsync(&ptr, count * sizeof(T), stream_));
-//		}
-//	}
-//
-//	// Disable copy constructor and assignment
-//	DeviceMemory(const DeviceMemory&) = delete;
-//	DeviceMemory& operator=(const DeviceMemory&) = delete;
-//
-//	// Move constructor
-//	DeviceMemory(DeviceMemory&& other) noexcept : ptr(other.ptr), count(other.count), stream_(other.stream_) {
-//		other.ptr = nullptr;
-//		other.count = 0;
-//	}
-//
-//	// Move assignment
-//	DeviceMemory& operator=(DeviceMemory&& other) noexcept {
-//		if (this != &other) {
-//			// Free existing resource if any
-//			if (ptr) {
-//				// Queue the free operation on the associated stream
-//				cudaFreeAsync(ptr, stream_);
-//				// Note: No CUDA_CHECK in destructor/move assignment free path. Log errors if needed.
-//			}
-//			// Transfer ownership
-//			ptr = other.ptr;
-//			count = other.count;
-//			stream_ = other.stream_;
-//			// Nullify the source object
-//			other.ptr = nullptr;
-//			other.count = 0;
-//		}
-//		return *this;
-//	}
-//
-//	~DeviceMemory() {
-//		if (ptr) {
-//			cudaFreeAsync(ptr, stream_);
-//		}
-//	}
-//
-//	T* get() const { return ptr; }
-//	size_t size() const { return count; }
-//	size_t bytes() const { return count * sizeof(T); }
-//};
 
 template <typename T>
 struct DeviceMemory {
