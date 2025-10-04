@@ -31,6 +31,7 @@ __global__ void advect_scalar(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* do
                               const nanovdb::Vec3f* velocityData, const float* inData, float* outData, const float* collisionSDF,
                               const bool hasCollision, size_t totalVoxels, float dt, float inv_voxelSize);
 
+
 __global__ void advect_scalars(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* domainGrid, const nanovdb::Coord* coords,
                                const nanovdb::Vec3f* velocityData, float** inDataArrays, float** outDataArrays, int numScalars,
                                const float* collisionSDF, const bool hasCollision, const unsigned char* active, size_t totalVoxels,
@@ -47,8 +48,6 @@ __global__ void divergence(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* domai
                            const nanovdb::Vec3f* velocityData, float* outDivergence, float inv_dx, const unsigned char* active,
                            size_t totalVoxels);
 
-__global__ void restrict_to_4x4x4(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* domainGrid, const nanovdb::Coord* d_coords,
-                                  const float* inData, float* outData, size_t totalVoxels);
 
 __global__ void prolongate(const float* coarse, float* fine, nanovdb::Coord coarse_dims, nanovdb::Coord fine_dims);
 

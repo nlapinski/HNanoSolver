@@ -200,6 +200,7 @@ extern "C" void HNS_UploadSources(void* ctx, HNS::GridIndexedData& data);
 extern "C" void HNS_EnsureContext(void** ctx, HNS::GridIndexedData& data, const nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>& handle,
                                   float voxelSize, bool hasCollision);
 extern "C" void HNS_DestroyContext(void** ctx);
+extern "C" void HNS_GetActiveMask(void* ctx, std::vector<unsigned char>& hostMask);
 
 void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	const auto& P = cookparms.parms<SOP_HNanoSolverParms>();
@@ -285,31 +286,6 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 		domain->tree().topologyUnion(sdf->tree());
 	}
 
-	// Tile activity mask from domain leaves
-	openvdb::MaskGrid::Ptr tileMask = openvdb::MaskGrid::create(false);
-	tileMask->setTransform(domain->transform().copy());
-	{
-		auto& ttree = tileMask->tree();
-		for (auto it = domain->tree().cbeginLeaf(); it; ++it) {
-			const openvdb::Coord org = it->origin();
-			const openvdb::CoordBBox bbox(org, org + openvdb::Coord(7, 7, 7));
-			ttree.fill(bbox, true, true);
-		}
-		if (hasCollision && sdf) {
-			ttree.topologyUnion(sdf->tree());
-		}
-		openvdb::tools::morphology::Morphology<openvdb::MaskTree>(ttree).dilateVoxels(P.getPadding(), openvdb::tools::NN_FACE_EDGE_VERTEX,
-		                                                                              openvdb::tools::IGNORE_TILES);
-	}
-
-	// Convert tile mask to float activity grid
-	openvdb::FloatGrid::Ptr tileActivity = openvdb::FloatGrid::create(0.0f);
-	tileActivity->setName("__tile_activity");
-	tileActivity->setTransform(domain->transform().copy());
-	tileActivity->tree().topologyUnion(tileMask->tree());
-	for (auto it = tileActivity->beginValueOn(); it; ++it) {
-		it.setValue(1.0f);
-	}
 
 	// Build indexed payload
 	HNS::GridIndexedData data;
@@ -321,7 +297,7 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	if (hasCollision && sdf) builder.addGridSDF(sdf, "collision_sdf");
 	for (auto& f : srcF) builder.addGrid(f, f->getName());
 	for (auto& v : srcV) builder.addGrid(v, v->getName());
-	builder.addGrid(tileActivity, tileActivity->getName());
+	
 
 	builder.build();
 
@@ -350,21 +326,79 @@ void SOP_HNanoSolverVerb::cook(const CookParms& cookparms) const {
 	try {
 		HNS_UploadSources(cache->user, data);
 		HNS_Advance(cache->user, P.getIterations(), float(P.getTimestep()), params);
-		gdp->clearAndDestroy();
+
+		// 1) Pull sim results from device to host (so data.pValues(...) are current)
 		HNS_DownloadForOutput(cache->user, data);
+
+		// 2) Pull active mask from device
+		std::vector<unsigned char> activeMask;
+		HNS_GetActiveMask(cache->user, activeMask);
+
+		// 3) Handies
+		const openvdb::Coord* hCoords = data.pCoords();
+		const size_t N = data.size();
+		const openvdb::math::Transform& xform = primaryV->transform();
+
+		// 4) Scatter helpers (write only active voxels)
+		auto scatterScalar = [&](const std::string& name, openvdb::FloatGrid::Ptr src) -> openvdb::FloatGrid::Ptr {
+			auto out = openvdb::FloatGrid::create(src ? float(src->background()) : 0.0f);
+			out->setName(name);
+			out->setTransform(xform.copy());
+
+			auto acc = out->getAccessor();
+			const float* vals = data.pValues<float>(name);
+			if (!vals) return out;
+
+			for (size_t i = 0; i < N; ++i) {
+				if (!activeMask[i]) continue;
+				const openvdb::Coord c = hCoords[i];
+				acc.setValueOn(c, vals[i]);
+			}
+			out->tree().voxelizeActiveTiles();
+			return out;
+		};
+
+		auto scatterVector = [&](const std::string& name, openvdb::VectorGrid::Ptr src) -> openvdb::VectorGrid::Ptr {
+			using V3 = openvdb::Vec3f;
+			auto out = openvdb::VectorGrid::create(src ? V3(src->background()) : V3(0));
+			out->setName(name);
+			out->setTransform(xform.copy());
+			out->setVectorType(openvdb::VEC_CONTRAVARIANT_ABSOLUTE);
+
+			auto acc = out->getAccessor();
+			const openvdb::Vec3f* vals = data.pValues<openvdb::Vec3f>(name);
+			if (!vals) return out;
+
+			for (size_t i = 0; i < N; ++i) {
+				if (!activeMask[i]) continue;
+				const openvdb::Coord c = hCoords[i];  // <-- FIX: openvdb::Coord
+				acc.setValueOn(c, vals[i]);
+			}
+			out->tree().voxelizeActiveTiles();
+			return out;
+		};
+
+		// 5) Rebuild output from active voxels only
+		gdp->clearAndDestroy();
+
+		// Scalars
+		for (auto& f : fbF) {
+			auto out = scatterScalar(f->getName(), f);
+			GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
+		}
+
+		// Velocity (optional)
+		if (params.downloadVel) {
+			for (auto& v : fbV) {
+				auto out = scatterVector(v->getName(), v);
+				GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
+			}
+		}
 	} catch (const std::exception& e) {
 		cookparms.sopAddError(SOP_MESSAGE, e.what());
 		return;
 	}
 
-	for (auto& f : fbF) {
-		auto out = builder.writeIndexGrid<openvdb::FloatGrid>(f->getName(), f->voxelSize()[0]);
-		GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
-	}
-	if (params.downloadVel) {
-		for (auto& v : fbV) {
-			auto out = builder.writeIndexGrid<openvdb::VectorGrid>(v->getName(), v->voxelSize()[0]);
-			GU_PrimVDB::buildFromGrid(*gdp, out, nullptr, out->getName().c_str());
-		}
-	}
+
+
 }

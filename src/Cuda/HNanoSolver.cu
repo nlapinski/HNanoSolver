@@ -86,6 +86,9 @@ extern "C" void HNS_EnsureContext(void** ctx, HNS::GridIndexedData& data, const 
 		C->d_advectedVel = DeviceMemory<nanovdb::Vec3f>(N, C->so.stream);
 		C->d_divergence = DeviceMemory<float>(N, C->so.stream);
 		C->d_pressure = DeviceMemory<float>(N, C->so.stream);
+		
+		C->d_active = DeviceMemory<unsigned char>(N, C->so.stream);
+
 
 		C->d_state.clear();
 
@@ -224,7 +227,7 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 	const size_t N = C->N;
 	const float dx = C->voxelSize;
 	const float inv_dx = 1.0f / dx;
-	const int SUBS = max(1, params.substeps);
+	const int SUBS = std::max(1, params.substeps);
 	const float dt_sub = dt / float(SUBS);
 	const int threads = 256;
 	const int blocks = int((N + threads - 1) / threads);
@@ -247,9 +250,10 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 	for (const auto& kv : C->d_state) advNames.push_back(kv.first);
 
 	for (int s = 0; s < SUBS; ++s) {
-		// Build activity mask from current state & sources
-		DeviceMemory<unsigned char> d_active(N, C->so.stream);
-		CUDA_CHECK(cudaMemsetAsync(d_active.get(), 0, N * sizeof(unsigned char), C->so.stream));
+		
+		// Activity mask data
+		CUDA_CHECK(cudaMemsetAsync(C->d_active.get(), 0, C->d_active.bytes(), C->so.stream));
+
 
 		const float dens_eps = 1e-6f;
 		const float vel_eps = 1e-6f;
@@ -262,31 +266,31 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 		const float* src_density = (C->d_src.count("src_density") ? C->d_src.at("src_density").get() : nullptr);
 
 		build_activity_mask<<<blocks, threads, 0, C->so.stream>>>(d_density, C->d_velocity.get(), src_density, src_v3, sx, sy, sz,
-		                                                          d_active.get(), (int)N, dens_eps, vel_eps);
+		                                                          C->d_active.get(), (int)N, dens_eps, vel_eps);
 		CUDA_CHECK(cudaGetLastError());
 
 		// 1) Advect velocity (masked)
 		advect_vector<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_velocity.get(), C->d_advectedVel.get(),
 		                                                    hasCollision ? C->d_collisionSDF.get() : nullptr, hasCollision,
-		                                                    /*active*/ d_active.get(), (size_t)N, dt_sub, inv_dx);
+		                                                    /*active*/ C->d_active.get(), (size_t)N, dt_sub, inv_dx);
 		CUDA_CHECK(cudaGetLastError());
 
 		// Vorticity confinement (masked)
 		vorticityConfinement<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_advectedVel.get(),
 		                                                           C->d_advectedVel.get(), dt_sub, inv_dx, params.vorticityScale,
 		                                                           params.factorScale,
-		                                                           /*active*/ d_active.get(), (size_t)N);
+		                                                           /*active*/ C->d_active.get(), (size_t)N);
 		CUDA_CHECK(cudaGetLastError());
 
 		// Velocity sources (masked)
 		if (C->d_src_vel_vec3.get()) {
 			add_velocity_source<<<blocks, threads, 0, C->so.stream>>>(C->d_advectedVel.get(), C->d_src_vel_vec3.get(), dt_sub,
-			                                                          /*active*/ d_active.get(), (int)N);
+			                                                          /*active*/ C->d_active.get(), (int)N);
 			CUDA_CHECK(cudaGetLastError());
 		} else if (C->d_src_vel_x.get() && C->d_src_vel_y.get() && C->d_src_vel_z.get()) {
 			add_velocity_source_xyz<<<blocks, threads, 0, C->so.stream>>>(C->d_advectedVel.get(), C->d_src_vel_x.get(),
 			                                                              C->d_src_vel_y.get(), C->d_src_vel_z.get(), dt_sub,
-			                                                              /*active*/ d_active.get(), (int)N);
+			                                                              /*active*/ C->d_active.get(), (int)N);
 			CUDA_CHECK(cudaGetLastError());
 		}
 
@@ -301,7 +305,7 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 			auto itD = C->d_state.find(p.d);
 			if (itS != C->d_src.end() && itD != C->d_state.end()) {
 				add_scalar_source<<<blocks, threads, 0, C->so.stream>>>(itD->second.get(), itS->second.get(), dt_sub,
-				                                                        /*active*/ d_active.get(), (int)N);
+				                                                        /*active*/ C->d_active.get(), (int)N);
 				CUDA_CHECK(cudaGetLastError());
 			}
 		}
@@ -309,13 +313,13 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 		// Gravity (masked)
 		if (params.gravity != 0.0f) {
 			add_gravity<<<blocks, threads, 0, C->so.stream>>>(C->d_advectedVel.get(), params.gravity, dt_sub,
-			                                                  /*active*/ d_active.get(), (int)N);
+			                                                  /*active*/ C->d_active.get(), (int)N);
 			CUDA_CHECK(cudaGetLastError());
 		}
 
 		// 2) Divergence (masked)
 		divergence<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_advectedVel.get(), C->d_divergence.get(),
-		                                                 inv_dx, /*active*/ d_active.get(), (size_t)N);
+		                                                 inv_dx, /*active*/ C->d_active.get(), (size_t)N);
 		CUDA_CHECK(cudaGetLastError());
 
 		// 3) Combustion + buoyancy (masked)
@@ -342,12 +346,12 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 		combustion_oxygen<<<blocks, threads, 0, C->so.stream>>>(d_fuel.get(), d_waste.get(), d_temp.get(), C->d_divergence.get(),
 		                                                        d_flame.get(), o_fuel.get(), o_waste.get(), o_temp.get(), o_flame.get(),
 		                                                        params.temperatureRelease, params.expansionRate,
-		                                                        /*active*/ d_active.get(), (int)N);
+		                                                        /*active*/ C->d_active.get(), (int)N);
 		CUDA_CHECK(cudaGetLastError());
 
 		temperature_buoyancy<<<blocks, threads, 0, C->so.stream>>>(C->d_advectedVel.get(), o_temp.get(), C->d_advectedVel.get(), dt_sub,
 		                                                           params.ambientTemp, params.buoyancyStrength,
-		                                                           /*active*/ d_active.get(), (size_t)N);
+		                                                           /*active*/ C->d_active.get(), (size_t)N);
 		CUDA_CHECK(cudaGetLastError());
 
 		// persist updated scalars
@@ -362,10 +366,10 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 		for (int it = 0; it < iteration; ++it) {
 			redBlackGaussSeidelUpdate<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_divergence.get(),
 			                                                                C->d_pressure.get(), dx, (size_t)N, 0, omega,
-			                                                                /*active*/ d_active.get());
+			                                                                /*active*/ C->d_active.get());
 			redBlackGaussSeidelUpdate<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_divergence.get(),
 			                                                                C->d_pressure.get(), dx, (size_t)N, 1, omega,
-			                                                                /*active*/ d_active.get());
+			                                                                /*active*/ C->d_active.get());
 		}
 		CUDA_CHECK(cudaGetLastError());
 
@@ -377,12 +381,12 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 				//    C->d_grid, C->d_coords.get(), itDens->second.get(), params.maskDensityMin, params.maskDensityMax,
 				//    hasCollision ? C->d_collisionSDF.get() : nullptr, hasCollision, C->d_advectedVel.get(), (int)N, dt_sub, inv_dx,
 				//    params.disturbanceThreshold / float(SUBS), params.disturbanceStrength, params.disturbanceSwirl,
-				//    (int)params.disturbanceFrequency, /*active*/ d_active.get());
+				//    (int)params.disturbanceFrequency, /*active*/ C->d_active.get());
 				//CUDA_CHECK(cudaGetLastError());
 			}
 
 			divergence<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_advectedVel.get(), C->d_divergence.get(),
-			                                                 inv_dx, /*active*/ d_active.get(), (size_t)N);
+			                                                 inv_dx, /*active*/ C->d_active.get(), (size_t)N);
 			CUDA_CHECK(cudaGetLastError());
 
 			CUDA_CHECK(cudaMemsetAsync(C->d_pressure.get(), 0, C->d_pressure.bytes(), C->so.stream));
@@ -390,10 +394,10 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 			for (int it = 0; it < it2; ++it) {
 				redBlackGaussSeidelUpdate<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_divergence.get(),
 				                                                                C->d_pressure.get(), dx, (size_t)N, 0, omega,
-				                                                                /*active*/ d_active.get());
+				                                                                /*active*/ C->d_active.get());
 				redBlackGaussSeidelUpdate<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_divergence.get(),
 				                                                                C->d_pressure.get(), dx, (size_t)N, 1, omega,
-				                                                                /*active*/ d_active.get());
+				                                                                /*active*/ C->d_active.get());
 			}
 			CUDA_CHECK(cudaGetLastError());
 		}
@@ -401,7 +405,7 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 		// 5) Projection (masked)
 		subtractPressureGradient<<<blocks, threads, 0, C->so.stream>>>(
 		    C->d_grid, C->d_coords.get(), (size_t)N, C->d_advectedVel.get(), C->d_pressure.get(), C->d_velocity.get(),
-		    hasCollision ? C->d_collisionSDF.get() : nullptr, hasCollision, inv_dx, /*active*/ d_active.get());
+		    hasCollision ? C->d_collisionSDF.get() : nullptr, hasCollision, inv_dx, /*active*/ C->d_active.get());
 		CUDA_CHECK(cudaGetLastError());
 
 		if (hasCollision) {
@@ -435,7 +439,7 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 			advect_scalars<<<blocks, threads, 0, C->so.stream>>>(C->d_grid, C->d_coords.get(), C->d_velocity.get(), d_inArr, d_outArr,
 			                                                     (int)inPtrs.size(), hasCollision ? C->d_collisionSDF.get() : nullptr,
 			                                                     hasCollision,
-			                                                     /*active*/ d_active.get(), (int)N, dt_sub, inv_dx);
+			                                                     /*active*/ C->d_active.get(), (int)N, dt_sub, inv_dx);
 			CUDA_CHECK(cudaGetLastError());
 
 			cudaFree(d_inArr);
@@ -449,6 +453,18 @@ extern "C" void HNS_Advance(void* ctx, int iteration, float dt, const Combustion
 	}
 
 	CUDA_CHECK(cudaStreamSynchronize(C->so.stream));
+}
+
+
+extern "C" void HNS_GetActiveMask(void* ctx, std::vector<unsigned char>& hostMask) {
+	auto* C = reinterpret_cast<SimContext*>(ctx);
+	if (!C || !C->N) {
+		hostMask.clear();
+		return;
+	}
+	hostMask.resize(C->d_active.bytes());
+	CUDA_CHECK(cudaMemcpy(hostMask.data(), C->d_active.get(), C->d_active.bytes(), cudaMemcpyDeviceToHost));
+	
 }
 
 

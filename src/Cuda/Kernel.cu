@@ -71,7 +71,8 @@ __global__ void build_activity_mask(const float* density, const nanovdb::Vec3f* 
 	} else if (src_vx && src_vy && src_vz) {
 		on |= (src_vx[i] != 0.f || src_vy[i] != 0.f || src_vz[i] != 0.f);
 	}
-	active[i] = on ? 1u : 0u;
+	//active[i] = on ? 1u : 0u;
+	active[i] = 1u;
 }
 
 // =====================================================
@@ -164,11 +165,21 @@ __global__ void advect_scalars(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* _
                                float** __restrict__ inDataArrays, float** __restrict__ outDataArrays, const int numScalars,
                                const float* __restrict__ collisionSDF, const bool hasCollision, const unsigned char* __restrict__ active,
                                const size_t totalVoxels, const float dt, const float inv_voxelSize) {
+
 	IndexOffsetSampler<0> s_idxSampler(domainGrid);
 	const IndexSampler<float, 1> sdfSampler(s_idxSampler, collisionSDF);
 
 	const uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx >= totalVoxels || (active && !active[idx])) return;
+	//if (idx >= totalVoxels || (active && !active[idx])) return;
+	// advect_scalars(...) – add copy-through for inactive
+	if (idx >= totalVoxels) return;
+	if (active && !active[idx]) {
+		// copy-through each scalar
+		for (int s = 0; s < numScalars; ++s) outDataArrays[s][idx] = inDataArrays[s][idx];
+		return;
+	}
+
+
 
 	const float scaled_dt = dt * inv_voxelSize;
 
@@ -341,7 +352,12 @@ __global__ void advect_vector(const nanovdb::NanoGrid<nanovdb::ValueOnIndex>* __
                               const unsigned char* __restrict__ active, const size_t totalVoxels, const float dt,
                               const float inv_voxelSize) {
 	const uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx >= totalVoxels || (active && !active[idx])) return;
+	//if (idx >= totalVoxels || (active && !active[idx])) return;
+	if (idx >= totalVoxels) return;
+	if (active && !active[idx]) {
+		outVelocity[idx] = velocityData[idx];
+		return;
+	}
 
 	const float scaled_dt = dt * inv_voxelSize;
 
@@ -472,64 +488,6 @@ __global__ void redBlackGaussSeidelUpdate(const nanovdb::NanoGrid<nanovdb::Value
 	pressure[tid] = pOld + omega * (pGS - pOld);
 }
 
-// =====================
-// Restriction (4x4x4)
-// =====================
-__global__ void restrict_to_4x4x4(const float* inData, float* outData, const size_t totalVoxels) {
-	const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= totalVoxels) return;
-
-	const int ic = tid % 4;
-	const int jc = (tid / 4) % 4;
-	const int kc = tid / 16;
-
-	const int i0 = ic * 2, j0 = jc * 2, k0 = kc * 2;
-
-	float sum = 0.0f;
-	for (int dz = 0; dz < 2; ++dz)
-		for (int dy = 0; dy < 2; ++dy)
-			for (int dx = 0; dx < 2; ++dx) {
-				const int i = i0 + dx;
-				const int j = j0 + dy;
-				const int k = k0 + dz;
-				const int index = i + j * 8 + k * 64;
-				sum += inData[index];
-			}
-	outData[tid] = sum / 8.0f;
-}
-
-// =====================
-// Single GS (utility)
-// =====================
-__global__ void redBlackGaussSeidelUpdate_single(const IndexOffsetSampler<0>& sampler, const nanovdb::Coord* d_coord,
-                                                 const float* divergence, float* pressure, const float dx, const size_t totalVoxels,
-                                                 const float omega, const int color) {
-	const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= totalVoxels) return;
-
-	const nanovdb::Coord c = d_coord[tid];
-	const int i = c.x(), j = c.y(), k = c.z();
-
-	if (((i + j + k) & 1) != color) return;
-
-	const auto pSampler = IndexSampler<float, 0>(sampler, pressure);
-
-	const float dx2 = dx * dx;
-	constexpr float inv6 = 0.166666667f;
-
-	const float pxp1 = pSampler(nanovdb::Coord(i + 1, j, k));
-	const float pxm1 = pSampler(nanovdb::Coord(i - 1, j, k));
-	const float pyp1 = pSampler(nanovdb::Coord(i, j + 1, k));
-	const float pym1 = pSampler(nanovdb::Coord(i, j - 1, k));
-	const float pzp1 = pSampler(nanovdb::Coord(i, j, k + 1));
-	const float pzm1 = pSampler(nanovdb::Coord(i, j, k - 1));
-
-	const float divVal = divergence[tid];
-	const float pOld = pressure[tid];
-
-	const float pGS = ((pxp1 + pxm1 + pyp1 + pym1 + pzp1 + pzm1) - divVal * dx2) * inv6;
-	pressure[tid] = pOld + omega * (pGS - pOld);
-}
 
 // ==========================================
 // Subtract Pressure Gradient (masked + SDF)
@@ -539,7 +497,14 @@ __global__ void subtractPressureGradient(const nanovdb::NanoGrid<nanovdb::ValueO
                                          nanovdb::Vec3f* out, const float* __restrict__ collisionSDF, const bool hasCollision,
                                          const float inv_voxelSize, const unsigned char* __restrict__ active) {
 	const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= totalVoxels || (active && !active[tid])) return;
+	//if (tid >= totalVoxels || (active && !active[tid])) return;
+	//  subtractPressureGradient(...) – add copy-through for inactive
+	if (tid >= totalVoxels) return;
+	if (active && !active[tid]) {
+		out[tid] = velocity[tid];
+		return;
+	}
+
 
 	const IndexOffsetSampler<0> idxSampler(domainGrid);
 	const auto pressureSampler = IndexSampler<float, 0>(idxSampler, pressure);
